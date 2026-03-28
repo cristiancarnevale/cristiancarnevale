@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Passport Scanner</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- ── App Shell ── -->
+  <div id="app">
+
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <line x1="7" y1="9" x2="17" y2="9"/>
+          <line x1="7" y1="13" x2="17" y2="13"/>
+          <line x1="7" y1="17" x2="13" y2="17"/>
+        </svg>
+      </div>
+      <h1>Passport Scanner</h1>
+    </header>
+
+    <!-- ── Screen: Start ── -->
+    <section id="screen-start" class="screen active">
+      <div class="card intro-card">
+        <div class="intro-icon">
+          <svg viewBox="0 0 80 80" fill="none">
+            <rect x="8" y="16" width="64" height="48" rx="6" fill="#1e40af" opacity="0.15"/>
+            <rect x="8" y="16" width="64" height="48" rx="6" stroke="#3b82f6" stroke-width="2"/>
+            <circle cx="28" cy="36" r="8" fill="#3b82f6" opacity="0.4"/>
+            <circle cx="28" cy="36" r="8" stroke="#3b82f6" stroke-width="1.5"/>
+            <line x1="42" y1="32" x2="64" y2="32" stroke="#3b82f6" stroke-width="2" stroke-linecap="round"/>
+            <line x1="42" y1="38" x2="60" y2="38" stroke="#3b82f6" stroke-width="2" stroke-linecap="round"/>
+            <line x1="14" y1="52" x2="66" y2="52" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+            <line x1="14" y1="57" x2="66" y2="57" stroke="#60a5fa" stroke-width="1.5" stroke-linecap="round" opacity="0.7"/>
+          </svg>
+        </div>
+        <h2>Scan Your Passport</h2>
+        <p>Point your camera at the photo page of your passport. Make sure the Machine Readable Zone (MRZ) at the bottom is clearly visible and well-lit.</p>
+        <ul class="tips-list">
+          <li>
+            <span class="tip-icon tip-ok">✓</span>
+            Place passport on a flat, dark surface
+          </li>
+          <li>
+            <span class="tip-icon tip-ok">✓</span>
+            Ensure good lighting — avoid glare
+          </li>
+          <li>
+            <span class="tip-icon tip-ok">✓</span>
+            Keep the camera steady
+          </li>
+          <li>
+            <span class="tip-icon tip-warn">!</span>
+            Never share scans of your passport publicly
+          </li>
+        </ul>
+      </div>
+      <button id="btn-start-camera" class="btn btn-primary btn-lg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+        Open Camera
+      </button>
+      <p class="privacy-note">All processing happens locally in your browser. No data is sent to any server.</p>
+    </section>
+
+    <!-- ── Screen: Camera ── -->
+    <section id="screen-camera" class="screen">
+      <div class="camera-container">
+        <video id="camera-video" autoplay playsinline muted></video>
+
+        <!-- Overlay: passport frame guide -->
+        <div class="camera-overlay">
+          <div class="overlay-dimmer overlay-top"></div>
+          <div class="overlay-middle-row">
+            <div class="overlay-dimmer overlay-side"></div>
+            <div class="passport-frame">
+              <span class="corner corner-tl"></span>
+              <span class="corner corner-tr"></span>
+              <span class="corner corner-bl"></span>
+              <span class="corner corner-br"></span>
+              <!-- MRZ zone indicator -->
+              <div class="mrz-zone">
+                <span class="mrz-label">MRZ</span>
+              </div>
+            </div>
+            <div class="overlay-dimmer overlay-side"></div>
+          </div>
+          <div class="overlay-dimmer overlay-bottom"></div>
+        </div>
+
+        <!-- HUD -->
+        <div class="camera-hud">
+          <p id="camera-hint" class="camera-hint">Align the passport within the frame</p>
+        </div>
+
+        <!-- Controls -->
+        <div class="camera-controls">
+          <button id="btn-cancel-camera" class="btn btn-ghost btn-icon" aria-label="Cancel">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+          <button id="btn-capture" class="btn btn-capture" aria-label="Capture">
+            <span class="capture-ring"></span>
+            <span class="capture-dot"></span>
+          </button>
+          <button id="btn-upload" class="btn btn-ghost btn-icon" aria-label="Upload from gallery" title="Upload image">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Hidden file input for gallery upload -->
+        <input type="file" id="file-input" accept="image/*" capture="environment" hidden />
+      </div>
+
+      <!-- Hidden canvas used for frame capture -->
+      <canvas id="capture-canvas" hidden></canvas>
+    </section>
+
+    <!-- ── Screen: Processing ── -->
+    <section id="screen-processing" class="screen">
+      <div class="processing-container">
+        <div class="spinner-ring"></div>
+        <h2 id="processing-title">Analysing passport…</h2>
+        <p id="processing-sub">Reading Machine Readable Zone</p>
+        <div class="progress-bar-wrap">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <p id="processing-detail" class="processing-detail"></p>
+      </div>
+    </section>
+
+    <!-- ── Screen: Results ── -->
+    <section id="screen-results" class="screen">
+      <div class="results-header">
+        <div id="result-status-icon" class="result-status-icon result-success">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        </div>
+        <h2 id="result-title">Passport Read Successfully</h2>
+        <p id="result-subtitle" class="result-subtitle">MRZ data extracted</p>
+      </div>
+
+      <!-- Captured thumbnail -->
+      <div class="result-thumb-wrap">
+        <canvas id="result-thumb" class="result-thumb"></canvas>
+      </div>
+
+      <!-- Data fields -->
+      <div id="result-fields" class="result-fields"></div>
+
+      <!-- Raw MRZ -->
+      <details class="mrz-raw-details">
+        <summary>Raw MRZ</summary>
+        <pre id="mrz-raw" class="mrz-raw"></pre>
+      </details>
+
+      <!-- Actions -->
+      <div class="result-actions">
+        <button id="btn-scan-again" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="1 4 1 10 7 10"/>
+            <path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+          </svg>
+          Scan Again
+        </button>
+        <button id="btn-copy-json" class="btn btn-secondary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="9" y="9" width="13" height="13" rx="2"/>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          Copy JSON
+        </button>
+      </div>
+    </section>
+
+    <!-- ── Screen: Error ── -->
+    <section id="screen-error" class="screen">
+      <div class="error-container">
+        <div class="result-status-icon result-error">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </div>
+        <h2 id="error-title">Could not read passport</h2>
+        <p id="error-message" class="error-message">The MRZ zone could not be detected. Please try again with better lighting.</p>
+        <div class="result-actions">
+          <button id="btn-retry" class="btn btn-primary">Try Again</button>
+        </div>
+      </div>
+    </section>
+
+  </div><!-- /#app -->
+
+  <!-- Toast notifications -->
+  <div id="toast" class="toast" aria-live="polite"></div>
+
+  <!-- Scripts (Tesseract.js loaded from CDN) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="js/mrz-parser.js"></script>
+  <script src="js/scanner.js"></script>
+</body>
+</html>
