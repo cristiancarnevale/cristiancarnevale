@@ -163,28 +163,31 @@
   }
 
   /**
-   * Build a list of preprocessed image data URLs.
-   * Full image + 3 bottom crops × 3 variants each.
+   * Build preprocessed image candidates targeting the zone where MRZ sits.
+   * When held in hand: MRZ is ~45–80% from top of frame.
+   * When flat on desk: MRZ is ~70–95% from top.
    */
   function buildOCRCandidates(dataURL) {
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
         const regions = [
-          [0,    1   ],   // full image
-          [0.6,  0.4 ],   // bottom 40%
-          [0.7,  0.3 ],   // bottom 30%
-          [0.78, 0.22],   // bottom 22%
+          [0.45, 0.35],   // 45–80%  held in hand (most common)
+          [0.55, 0.30],   // 55–85%
+          [0.60, 0.28],   // 60–88%
+          [0.65, 0.25],   // 65–90%  held higher
+          [0.70, 0.22],   // 70–92%  flat on desk
+          [0.75, 0.25],   // 75–100% flat, passport low in frame
         ];
         const out = [];
         for (const [y, h] of regions) {
-          const base   = prepareCanvas(img, y, h);
+          const base    = prepareCanvas(img, y, h);
           const binAuto = binarizeCanvas(base, null);
           const inverted = invertCanvas(binAuto);
           out.push(
-            base.toDataURL('image/png'),       // high-contrast grayscale
-            binAuto.toDataURL('image/png'),    // adaptive binarize
-            inverted.toDataURL('image/png'),   // inverted (handles glare)
+            base.toDataURL('image/png'),
+            binAuto.toDataURL('image/png'),
+            inverted.toDataURL('image/png'),
           );
         }
         resolve(out);

@@ -172,7 +172,14 @@ const MRZParser = (() => {
     // Uppercase, remove spaces and non-MRZ chars, keep A-Z 0-9 <
     let normalized = line.toUpperCase().replace(/[^A-Z0-9<]/g, '<');
 
-    // Per-char normalization
+    // Fix: Tesseract commonly reads OCR-B '<' filler as 'L'.
+    // If the line contains many Ls (>5), runs of 2+ consecutive Ls are fillers.
+    const lCount = (normalized.match(/L/g) || []).length;
+    if (lCount > 5) {
+      normalized = normalized.replace(/L{2,}/g, m => '<'.repeat(m.length));
+    }
+
+    // Per-char normalization for numeric positions
     normalized = normalized
       .split('')
       .map((ch, i) => normalizeMRZChar(ch, i, lineIndex))
