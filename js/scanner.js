@@ -74,7 +74,7 @@
       video.srcObject = stream;
       await video.play();
       showScreen('camera');
-      cameraHint.textContent = 'Align the passport within the frame';
+      if (cameraHint) cameraHint.textContent = 'Align the passport within the frame';
     } catch (err) {
       handleCameraError(err);
     }
