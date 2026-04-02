@@ -156,6 +156,15 @@ html, body {
   line-height: 1.5;
 }
 
+.version-note {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--accent);
+  margin-top: 6px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
 /* ── Buttons ── */
 .btn {
   display: inline-flex;
