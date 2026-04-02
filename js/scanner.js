@@ -114,49 +114,80 @@
     return captureCanvas.toDataURL('image/jpeg', 0.92);
   }
 
-  /* ── Crop MRZ region ── */
+  /* ── Image preprocessing ── */
+
+  function prepareCanvas(img, yFrac, hFrac) {
+    const W = img.width, H = img.height;
+    const cropY = Math.round(H * yFrac);
+    const cropH = Math.round(H * hFrac);
+    const scale = Math.max(1, 1400 / W);
+    const outW = Math.round(W * scale);
+    const outH = Math.round(cropH * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = outW; canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    ctx.filter = 'grayscale(1) contrast(2.2) brightness(1.05)';
+    ctx.drawImage(img, 0, cropY, W, cropH, 0, 0, outW, outH);
+    ctx.filter = 'none';
+    return canvas;
+  }
+
+  function binarizeCanvas(src, threshold) {
+    const c = document.createElement('canvas');
+    c.width = src.width; c.height = src.height;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(src, 0, 0);
+    const id = ctx.getImageData(0, 0, c.width, c.height);
+    const d = id.data;
+    // Adaptive: use mean luminance if threshold not specified
+    if (threshold == null) {
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += d[i];
+      threshold = Math.min((sum / (d.length / 4)) * 0.85, 175);
+    }
+    for (let i = 0; i < d.length; i += 4) {
+      const v = d[i] < threshold ? 0 : 255;
+      d[i] = d[i+1] = d[i+2] = v;
+    }
+    ctx.putImageData(id, 0, 0);
+    return c;
+  }
+
+  function invertCanvas(src) {
+    const c = document.createElement('canvas');
+    c.width = src.width; c.height = src.height;
+    const ctx = c.getContext('2d');
+    ctx.filter = 'invert(1)';
+    ctx.drawImage(src, 0, 0);
+    return c;
+  }
+
   /**
-   * Returns several candidate crops of the bottom portion of the image,
-   * each with aggressive preprocessing for OCR.
-   * Trying multiple crops increases the chance of a clean MRZ read.
+   * Build a list of preprocessed image data URLs.
+   * Full image + 3 bottom crops × 3 variants each.
    */
-  function cropMRZCandidates(dataURL) {
-    return new Promise((resolve) => {
+  function buildOCRCandidates(dataURL) {
+    return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
-        // Crop percentages to try: 20%, 28%, 38% from the bottom
-        const fractions = [0.20, 0.28, 0.38];
-        const candidates = fractions.map(frac => {
-          const cropH = Math.round(img.height * frac);
-          const cropY = img.height - cropH;
-
-          // Scale up for better OCR (min 600px tall)
-          const scale = Math.max(1, 600 / cropH);
-          const outW = Math.round(img.width  * scale);
-          const outH = Math.round(cropH * scale);
-
-          const canvas = document.createElement('canvas');
-          canvas.width  = outW;
-          canvas.height = outH;
-          const ctx = canvas.getContext('2d');
-
-          // Grayscale + strong contrast
-          ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
-          ctx.drawImage(img, 0, cropY, img.width, cropH, 0, 0, outW, outH);
-
-          // Second pass: binarize via pixel manipulation
-          const imgData = ctx.getImageData(0, 0, outW, outH);
-          const d = imgData.data;
-          for (let i = 0; i < d.length; i += 4) {
-            const lum = d[i]; // already grayscale
-            const bin = lum < 140 ? 0 : 255;
-            d[i] = d[i+1] = d[i+2] = bin;
-          }
-          ctx.putImageData(imgData, 0, 0);
-
-          return canvas.toDataURL('image/png');
-        });
-        resolve(candidates);
+        const regions = [
+          [0,    1   ],   // full image
+          [0.6,  0.4 ],   // bottom 40%
+          [0.7,  0.3 ],   // bottom 30%
+          [0.78, 0.22],   // bottom 22%
+        ];
+        const out = [];
+        for (const [y, h] of regions) {
+          const base   = prepareCanvas(img, y, h);
+          const binAuto = binarizeCanvas(base, null);
+          const inverted = invertCanvas(binAuto);
+          out.push(
+            base.toDataURL('image/png'),       // high-contrast grayscale
+            binAuto.toDataURL('image/png'),    // adaptive binarize
+            inverted.toDataURL('image/png'),   // inverted (handles glare)
+          );
+        }
+        resolve(out);
       };
       img.src = dataURL;
     });
@@ -172,50 +203,54 @@
         if (m.status === 'recognizing text') {
           setProgress(40 + m.progress * 40, 'Reading MRZ characters…');
         }
-        if (m.status === 'loading tesseract core') {
-          setProgress(10, 'Loading OCR engine…');
-        }
-        if (m.status === 'initializing tesseract') {
-          setProgress(20, 'Initialising…');
-        }
-        if (m.status === 'loading language traineddata') {
-          setProgress(30, 'Loading language data…');
-        }
+        if (m.status === 'loading tesseract core')          setProgress(10, 'Loading OCR engine…');
+        if (m.status === 'initializing tesseract')          setProgress(20, 'Initialising…');
+        if (m.status === 'loading language traineddata')    setProgress(30, 'Loading language data…');
       },
     });
 
     return tesseractWorker;
   }
 
-  /* ── Run OCR on one image with given PSM ── */
-  async function runOCRWithPSM(worker, imageDataURL, psm) {
-    await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
+  /* ── Run OCR on one image ── */
+  async function runOCROnImage(worker, imageDataURL, psm, useWhitelist) {
+    const params = {
       tessedit_pageseg_mode: String(psm),
       preserve_interword_spaces: '0',
-    });
+    };
+    if (useWhitelist) {
+      params.tessedit_char_whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<';
+    } else {
+      params.tessedit_char_whitelist = '';
+    }
+    await worker.setParameters(params);
     const { data } = await worker.recognize(imageDataURL);
     return data.text;
   }
 
-  /* ── Run OCR trying multiple crops and PSM modes ── */
+  /* ── Main OCR pipeline: try all candidates until MRZ found ── */
   async function runOCR(dataURL) {
     const worker = await initTesseract();
-    const candidates = await cropMRZCandidates(dataURL);
+    const candidates = await buildOCRCandidates(dataURL);
+    let lastText = '';
 
-    // PSM 6 = uniform block, PSM 11 = sparse text — both useful for MRZ
-    const psmModes = [6, 11, 4];
-
-    for (const crop of candidates) {
-      for (const psm of psmModes) {
-        const text = await runOCRWithPSM(worker, crop, psm);
-        const lines = MRZParser.extractMRZLines(text);
-        if (lines) return { text, lines };
-      }
+    // Priority attempts: PSM 11 (sparse) without whitelist first — most permissive
+    for (const img of candidates) {
+      const text = await runOCROnImage(worker, img, 11, false);
+      lastText = text;
+      const lines = MRZParser.extractMRZLines(text);
+      if (lines) return { text, lines };
     }
-    // Return last OCR text even if no MRZ found, for error reporting
-    const fallback = await runOCRWithPSM(worker, candidates[1], 6);
-    return { text: fallback, lines: null };
+
+    // Second pass: PSM 6 (uniform block) with whitelist
+    for (const img of candidates) {
+      const text = await runOCROnImage(worker, img, 6, true);
+      lastText = text;
+      const lines = MRZParser.extractMRZLines(text);
+      if (lines) return { text, lines };
+    }
+
+    return { text: lastText, lines: null };
   }
 
   /* ── Main scan pipeline ── */
