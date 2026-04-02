@@ -62,6 +62,7 @@
   /* ── Camera ── */
   async function startCamera() {
     stopCamera();
+    showScreen('camera'); // show screen first so video element is visible
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -72,9 +73,9 @@
         audio: false,
       });
       video.srcObject = stream;
-      await video.play();
-      showScreen('camera');
-      if (cameraHint) cameraHint.textContent = 'Align the passport within the frame';
+      // Don't await play() — autoplay + muted + playsinline handles it.
+      // Awaiting can throw AbortError on iOS even with permission granted.
+      video.play().catch(() => {});
     } catch (err) {
       handleCameraError(err);
     }
@@ -89,7 +90,7 @@
   }
 
   function handleCameraError(err) {
-    console.error('Camera error:', err);
+    console.error('Camera error:', err.name, err.message);
     let msg = 'Camera access failed.';
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
       msg = 'Camera permission denied. Please allow camera access in your browser settings, then try again.';
@@ -97,6 +98,8 @@
       msg = 'No camera found on this device.';
     } else if (err.name === 'NotReadableError') {
       msg = 'Camera is already in use by another application.';
+    } else {
+      msg = `Camera error (${err.name}): ${err.message}`;
     }
     showErrorScreen('Camera Unavailable', msg);
   }
