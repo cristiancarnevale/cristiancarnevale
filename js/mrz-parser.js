@@ -189,40 +189,67 @@ const MRZParser = (() => {
   function extractMRZLines(ocrText) {
     if (!ocrText) return null;
 
-    const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
+    // Normalize: uppercase, strip everything except A-Z 0-9 < and newlines
+    const normalized = ocrText
+      .toUpperCase()
+      .replace(/[^A-Z0-9<\n]/g, ' ')
+      .replace(/ {2,}/g, ' ');
+
+    const lines = normalized.split('\n').map(l => l.replace(/\s+/g, '').trim()).filter(Boolean);
     const candidates = [];
 
     for (const raw of lines) {
-      // Keep only MRZ-valid characters
-      const cleaned = raw.toUpperCase().replace(/[^A-Z0-9<\s]/g, '').replace(/\s+/g, '');
-      if (cleaned.length >= 35) {  // some tolerance below 44
-        candidates.push(cleaned);
+      if (raw.length >= 30) {
+        candidates.push(raw);
       }
     }
 
-    // Look for pair of lines near length 44
+    // ── Strategy 1: consecutive pair near 44 chars ──
     for (let i = 0; i < candidates.length - 1; i++) {
       const a = candidates[i];
       const b = candidates[i + 1];
-      if (a.length >= 38 && b.length >= 38 && a.length <= 50 && b.length <= 50) {
-        // Pad/trim to 44
+      if (a.length >= 30 && b.length >= 30) {
         const l1 = a.padEnd(44, '<').slice(0, 44);
         const l2 = b.padEnd(44, '<').slice(0, 44);
-        if (l1[0] === 'P') {  // Line 1 must start with P for a passport
+        // Line 1 should start with P (passport) — also accept common OCR confusions
+        if (/^[P]/.test(l1)) {
           return [normalizeMRZLine(l1, 0), normalizeMRZLine(l2, 1)];
         }
       }
     }
 
-    // Fallback: try single long string containing both lines concatenated
+    // ── Strategy 2: any pair where line 1 has lots of '<' (filler chars) ──
+    for (let i = 0; i < candidates.length - 1; i++) {
+      const a = candidates[i];
+      const b = candidates[i + 1];
+      const aFillerRatio = (a.match(/</g) || []).length / a.length;
+      const bHasDigits = /\d{6}/.test(b); // DOB or expiry digits on line 2
+      if (a.length >= 30 && b.length >= 30 && aFillerRatio > 0.2 && bHasDigits) {
+        const l1 = a.padEnd(44, '<').slice(0, 44);
+        const l2 = b.padEnd(44, '<').slice(0, 44);
+        return [normalizeMRZLine(l1, 0), normalizeMRZLine(l2, 1)];
+      }
+    }
+
+    // ── Strategy 3: find 88-char block (both lines concatenated) ──
     const allText = candidates.join('');
-    const match = allText.match(/P[A-Z<][A-Z<]{3}[A-Z<]{39}[A-Z0-9<]{44}/);
+    const match = allText.match(/P.{43}[A-Z0-9<]{44}/);
     if (match) {
       const combined = match[0];
       return [
         normalizeMRZLine(combined.slice(0, 44), 0),
         normalizeMRZLine(combined.slice(44, 88), 1),
       ];
+    }
+
+    // ── Strategy 4: look for a line with 6+ consecutive digits (DOB/expiry) ──
+    // and use it as line 2, the line before it as line 1
+    for (let i = 1; i < candidates.length; i++) {
+      if (/\d{6}/.test(candidates[i]) && candidates[i-1].length >= 25) {
+        const l1 = candidates[i-1].padEnd(44, '<').slice(0, 44);
+        const l2 = candidates[i].padEnd(44, '<').slice(0, 44);
+        return [normalizeMRZLine(l1, 0), normalizeMRZLine(l2, 1)];
+      }
     }
 
     return null;

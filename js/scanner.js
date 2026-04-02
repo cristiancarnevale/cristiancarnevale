@@ -116,23 +116,47 @@
 
   /* ── Crop MRZ region ── */
   /**
-   * Attempts to crop the bottom ~25% of the image where the MRZ lives.
-   * Returns a data URL of the cropped image.
+   * Returns several candidate crops of the bottom portion of the image,
+   * each with aggressive preprocessing for OCR.
+   * Trying multiple crops increases the chance of a clean MRZ read.
    */
-  function cropMRZRegion(dataURL) {
+  function cropMRZCandidates(dataURL) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const cropH = Math.round(img.height * 0.28);
-        const cropY = img.height - cropH;
-        const canvas = document.createElement('canvas');
-        canvas.width  = img.width;
-        canvas.height = cropH;
-        const ctx = canvas.getContext('2d');
-        // Enhance contrast for better OCR
-        ctx.filter = 'contrast(1.6) brightness(1.1) grayscale(1)';
-        ctx.drawImage(img, 0, cropY, img.width, cropH, 0, 0, img.width, cropH);
-        resolve(canvas.toDataURL('image/png'));
+        // Crop percentages to try: 20%, 28%, 38% from the bottom
+        const fractions = [0.20, 0.28, 0.38];
+        const candidates = fractions.map(frac => {
+          const cropH = Math.round(img.height * frac);
+          const cropY = img.height - cropH;
+
+          // Scale up for better OCR (min 600px tall)
+          const scale = Math.max(1, 600 / cropH);
+          const outW = Math.round(img.width  * scale);
+          const outH = Math.round(cropH * scale);
+
+          const canvas = document.createElement('canvas');
+          canvas.width  = outW;
+          canvas.height = outH;
+          const ctx = canvas.getContext('2d');
+
+          // Grayscale + strong contrast
+          ctx.filter = 'grayscale(1) contrast(2) brightness(1.15)';
+          ctx.drawImage(img, 0, cropY, img.width, cropH, 0, 0, outW, outH);
+
+          // Second pass: binarize via pixel manipulation
+          const imgData = ctx.getImageData(0, 0, outW, outH);
+          const d = imgData.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const lum = d[i]; // already grayscale
+            const bin = lum < 140 ? 0 : 255;
+            d[i] = d[i+1] = d[i+2] = bin;
+          }
+          ctx.putImageData(imgData, 0, 0);
+
+          return canvas.toDataURL('image/png');
+        });
+        resolve(candidates);
       };
       img.src = dataURL;
     });
@@ -146,7 +170,7 @@
     tesseractWorker = await Tesseract.createWorker('eng', 1, {
       logger: m => {
         if (m.status === 'recognizing text') {
-          setProgress(40 + m.progress * 45, 'Reading MRZ characters…');
+          setProgress(40 + m.progress * 40, 'Reading MRZ characters…');
         }
         if (m.status === 'loading tesseract core') {
           setProgress(10, 'Loading OCR engine…');
@@ -160,21 +184,38 @@
       },
     });
 
-    // Configure for MRZ: uppercase OCR-B characters
-    await tesseractWorker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
-      tessedit_pageseg_mode: '6',   // Assume a single uniform block of text
-      preserve_interword_spaces: '0',
-    });
-
     return tesseractWorker;
   }
 
-  /* ── Run OCR ── */
-  async function runOCR(imageDataURL) {
-    const worker = await initTesseract();
+  /* ── Run OCR on one image with given PSM ── */
+  async function runOCRWithPSM(worker, imageDataURL, psm) {
+    await worker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<',
+      tessedit_pageseg_mode: String(psm),
+      preserve_interword_spaces: '0',
+    });
     const { data } = await worker.recognize(imageDataURL);
     return data.text;
+  }
+
+  /* ── Run OCR trying multiple crops and PSM modes ── */
+  async function runOCR(dataURL) {
+    const worker = await initTesseract();
+    const candidates = await cropMRZCandidates(dataURL);
+
+    // PSM 6 = uniform block, PSM 11 = sparse text — both useful for MRZ
+    const psmModes = [6, 11, 4];
+
+    for (const crop of candidates) {
+      for (const psm of psmModes) {
+        const text = await runOCRWithPSM(worker, crop, psm);
+        const lines = MRZParser.extractMRZLines(text);
+        if (lines) return { text, lines };
+      }
+    }
+    // Return last OCR text even if no MRZ found, for error reporting
+    const fallback = await runOCRWithPSM(worker, candidates[1], 6);
+    return { text: fallback, lines: null };
   }
 
   /* ── Main scan pipeline ── */
@@ -188,14 +229,15 @@
     await renderThumbnail(dataURL);
 
     try {
-      setProgress(8, 'Cropping MRZ region…');
-      const mrzCrop = await cropMRZRegion(dataURL);
+      setProgress(8, 'Preparing image crops…');
 
       setProgress(12, 'Starting OCR engine…');
-      const ocrText = await runOCR(mrzCrop);
+      const { text: ocrText, lines: mrzLines } = await runOCR(dataURL);
 
       setProgress(90, 'Parsing MRZ data…');
-      const { data, lines, error } = MRZParser.parseFromOCR(ocrText);
+      const { data, lines, error } = mrzLines
+        ? { data: MRZParser.parseLines(mrzLines[0], mrzLines[1]), lines: mrzLines, error: null }
+        : MRZParser.parseFromOCR(ocrText);
 
       setProgress(100, 'Done');
 
