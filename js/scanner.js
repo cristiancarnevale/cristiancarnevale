@@ -101,17 +101,52 @@
     showErrorScreen('Camera Unavailable', msg);
   }
 
-  /* ── Capture frame from video ── */
+  /* ── Capture frame cropped to the passport guide frame ── */
   function captureVideoFrame() {
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || !vh) throw new Error('Video dimensions unavailable');
 
-    captureCanvas.width  = vw;
-    captureCanvas.height = vh;
+    const guide      = document.getElementById('passport-guide');
+    const videoRect  = video.getBoundingClientRect();
+    const guideRect  = guide.getBoundingClientRect();
+
+    // Map guide screen coords → video pixel coords
+    // video is object-fit:cover — calculate actual scale & offset
+    const videoAspect   = vw / vh;
+    const displayAspect = videoRect.width / videoRect.height;
+    let scaleX, scaleY, offX, offY;
+    if (videoAspect > displayAspect) {
+      // Video wider than display: pillarboxed sides
+      scaleY = vw / videoAspect / videoRect.height; // = vh / videoRect.height
+      scaleX = scaleY;
+      offX   = (vw - videoRect.width * scaleX) / 2;
+      offY   = 0;
+    } else {
+      // Video taller than display: letterboxed top/bottom
+      scaleX = vw / videoRect.width;
+      scaleY = scaleX;
+      offX   = 0;
+      offY   = (vh - videoRect.height * scaleY) / 2;
+    }
+
+    const gx = (guideRect.left - videoRect.left) * scaleX + offX;
+    const gy = (guideRect.top  - videoRect.top)  * scaleY + offY;
+    const gw = guideRect.width  * scaleX;
+    const gh = guideRect.height * scaleY;
+
+    // Slight padding so we don't clip the edges
+    const pad = gw * 0.015;
+    const cx = Math.max(0, Math.round(gx - pad));
+    const cy = Math.max(0, Math.round(gy - pad));
+    const cw = Math.min(vw - cx, Math.round(gw + pad * 2));
+    const ch = Math.min(vh - cy, Math.round(gh + pad * 2));
+
+    captureCanvas.width  = cw;
+    captureCanvas.height = ch;
     const ctx = captureCanvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, vw, vh);
-    return captureCanvas.toDataURL('image/jpeg', 0.92);
+    ctx.drawImage(video, cx, cy, cw, ch, 0, 0, cw, ch);
+    return captureCanvas.toDataURL('image/jpeg', 0.93);
   }
 
   /* ── Image preprocessing ── */
@@ -163,26 +198,25 @@
   }
 
   /**
-   * Build preprocessed image candidates targeting the zone where MRZ sits.
-   * When held in hand: MRZ is ~45–80% from top of frame.
-   * When flat on desk: MRZ is ~70–95% from top.
+   * Build OCR candidates from the captured passport image.
+   * Since captureVideoFrame() already crops to the guide frame,
+   * the MRZ is always in the bottom ~28% of the image.
+   * We try the full passport image and the isolated MRZ strip.
    */
   function buildOCRCandidates(dataURL) {
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
+        // Full passport crop + MRZ strip only (bottom 30%)
         const regions = [
-          [0.45, 0.35],   // 45–80%  held in hand (most common)
-          [0.55, 0.30],   // 55–85%
-          [0.60, 0.28],   // 60–88%
-          [0.65, 0.25],   // 65–90%  held higher
-          [0.70, 0.22],   // 70–92%  flat on desk
-          [0.75, 0.25],   // 75–100% flat, passport low in frame
+          [0.72, 0.28],   // MRZ strip — bottom 28% of passport page
+          [0.65, 0.35],   // slightly wider MRZ area
+          [0,    1   ],   // full passport page (fallback)
         ];
         const out = [];
         for (const [y, h] of regions) {
-          const base    = prepareCanvas(img, y, h);
-          const binAuto = binarizeCanvas(base, null);
+          const base     = prepareCanvas(img, y, h);
+          const binAuto  = binarizeCanvas(base, null);
           const inverted = invertCanvas(binAuto);
           out.push(
             base.toDataURL('image/png'),
