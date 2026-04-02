@@ -1,0 +1,356 @@
+/**
+ * mrz-parser.js
+ * Parses ICAO 9303 Machine Readable Zone (MRZ) data from passports (TD3 format).
+ *
+ * TD3 format: 2 lines × 44 characters
+ *
+ * Line 1: P<ISSUER<<SURNAME<<GIVEN_NAMES<<<<<<<<<<<<<<
+ *         ─┬─────────────────────────────────────────
+ *          └ [0]   Document type (P = passport)
+ *            [1]   Document sub-type (<, V, etc.)
+ *            [2-4] Issuing country (3-letter ICAO code)
+ *            [5-43] Names (44 chars): SURNAME<<GIVEN_NAMES
+ *
+ * Line 2: PPPPPPPPPCCCYYYYMMDDCXXXXXXXYYYYMMDDCPPPPPPPPPPPPPPCC
+ *         [0-8]   Passport number (9)
+ *         [9]     Passport number check digit
+ *         [10-12] Nationality (3-letter ICAO)
+ *         [13-18] Date of birth YYMMDD
+ *         [19]    DOB check digit
+ *         [20]    Sex (M / F / <)
+ *         [21-26] Expiry date YYMMDD
+ *         [27]    Expiry check digit
+ *         [28-41] Optional / personal number (14)
+ *         [42]    Optional check digit
+ *         [43]    Composite check digit
+ */
+
+'use strict';
+
+const MRZParser = (() => {
+
+  /* ── ICAO 9303 Check digit ── */
+  const CHECK_WEIGHTS = [7, 3, 1];
+  const CHAR_VALUES = Object.fromEntries([
+    ...Array.from({ length: 10 }, (_, i) => [String(i), i]),
+    ...Array.from({ length: 26 }, (_, i) => [String.fromCharCode(65 + i), 10 + i]),
+    ['<', 0],
+  ]);
+
+  function computeCheckDigit(str) {
+    let total = 0;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i].toUpperCase();
+      const val = CHAR_VALUES[ch] ?? 0;
+      total += val * CHECK_WEIGHTS[i % 3];
+    }
+    return total % 10;
+  }
+
+  function verifyCheckDigit(str, expectedDigit) {
+    if (expectedDigit === '<') return null; // not checked
+    const expected = parseInt(expectedDigit, 10);
+    if (isNaN(expected)) return false;
+    return computeCheckDigit(str) === expected;
+  }
+
+  /* ── Date helpers ── */
+  function parseMRZDate(yymmdd) {
+    if (!yymmdd || yymmdd.includes('<')) return null;
+    const yy = parseInt(yymmdd.slice(0, 2), 10);
+    const mm = parseInt(yymmdd.slice(2, 4), 10);
+    const dd = parseInt(yymmdd.slice(4, 6), 10);
+    if (isNaN(yy) || isNaN(mm) || isNaN(dd)) return null;
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+
+    // Pivot year: if 2-digit year ≤ current year's last 2 digits + 10 → 20xx, else 19xx
+    const currentYear = new Date().getFullYear();
+    const pivot = (currentYear + 10) % 100;
+    const fullYear = yy <= pivot ? 2000 + yy : 1900 + yy;
+
+    return {
+      year:  fullYear,
+      month: mm,
+      day:   dd,
+      iso:   `${fullYear}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`,
+      display: new Date(fullYear, mm - 1, dd)
+        .toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }),
+    };
+  }
+
+  /* ── Country codes (ICAO 3-letter → display name) ── */
+  const COUNTRY_NAMES = {
+    AFG:'Afghanistan', ALB:'Albania', DZA:'Algeria', AND:'Andorra', AGO:'Angola',
+    ARG:'Argentina', ARM:'Armenia', AUS:'Australia', AUT:'Austria', AZE:'Azerbaijan',
+    BHS:'Bahamas', BHR:'Bahrain', BGD:'Bangladesh', BLR:'Belarus', BEL:'Belgium',
+    BLZ:'Belize', BEN:'Benin', BTN:'Bhutan', BOL:'Bolivia', BIH:'Bosnia & Herzegovina',
+    BWA:'Botswana', BRA:'Brazil', BRN:'Brunei', BGR:'Bulgaria', BFA:'Burkina Faso',
+    BDI:'Burundi', CPV:'Cabo Verde', KHM:'Cambodia', CMR:'Cameroon', CAN:'Canada',
+    CAF:'Central African Republic', TCD:'Chad', CHL:'Chile', CHN:'China', COL:'Colombia',
+    COM:'Comoros', COD:'Congo (DRC)', COG:'Congo (Republic)', CRI:'Costa Rica',
+    CIV:"Côte d'Ivoire", HRV:'Croatia', CUB:'Cuba', CYP:'Cyprus', CZE:'Czech Republic',
+    DNK:'Denmark', DJI:'Djibouti', DOM:'Dominican Republic', ECU:'Ecuador', EGY:'Egypt',
+    SLV:'El Salvador', GNQ:'Equatorial Guinea', ERI:'Eritrea', EST:'Estonia', ETH:'Ethiopia',
+    FJI:'Fiji', FIN:'Finland', FRA:'France', GAB:'Gabon', GMB:'Gambia', GEO:'Georgia',
+    DEU:'Germany', GHA:'Ghana', GRC:'Greece', GTM:'Guatemala', GIN:'Guinea',
+    GNB:'Guinea-Bissau', GUY:'Guyana', HTI:'Haiti', HND:'Honduras', HUN:'Hungary',
+    ISL:'Iceland', IND:'India', IDN:'Indonesia', IRN:'Iran', IRQ:'Iraq', IRL:'Ireland',
+    ISR:'Israel', ITA:'Italy', JAM:'Jamaica', JPN:'Japan', JOR:'Jordan', KAZ:'Kazakhstan',
+    KEN:'Kenya', PRK:'North Korea', KOR:'South Korea', KWT:'Kuwait', KGZ:'Kyrgyzstan',
+    LAO:'Laos', LVA:'Latvia', LBN:'Lebanon', LSO:'Lesotho', LBR:'Liberia', LBY:'Libya',
+    LIE:'Liechtenstein', LTU:'Lithuania', LUX:'Luxembourg', MDG:'Madagascar', MWI:'Malawi',
+    MYS:'Malaysia', MDV:'Maldives', MLI:'Mali', MLT:'Malta', MRT:'Mauritania',
+    MUS:'Mauritius', MEX:'Mexico', MDA:'Moldova', MCO:'Monaco', MNG:'Mongolia',
+    MNE:'Montenegro', MAR:'Morocco', MOZ:'Mozambique', MMR:'Myanmar', NAM:'Namibia',
+    NPL:'Nepal', NLD:'Netherlands', NZL:'New Zealand', NIC:'Nicaragua', NER:'Niger',
+    NGA:'Nigeria', MKD:'North Macedonia', NOR:'Norway', OMN:'Oman', PAK:'Pakistan',
+    PAN:'Panama', PNG:'Papua New Guinea', PRY:'Paraguay', PER:'Peru', PHL:'Philippines',
+    POL:'Poland', PRT:'Portugal', QAT:'Qatar', ROU:'Romania', RUS:'Russia', RWA:'Rwanda',
+    SAU:'Saudi Arabia', SEN:'Senegal', SRB:'Serbia', SLE:'Sierra Leone', SGP:'Singapore',
+    SVK:'Slovakia', SVN:'Slovenia', SOM:'Somalia', ZAF:'South Africa', SSD:'South Sudan',
+    ESP:'Spain', LKA:'Sri Lanka', SDN:'Sudan', SUR:'Suriname', SWE:'Sweden', CHE:'Switzerland',
+    SYR:'Syria', TWN:'Taiwan', TJK:'Tajikistan', TZA:'Tanzania', THA:'Thailand',
+    TLS:'Timor-Leste', TGO:'Togo', TTO:'Trinidad & Tobago', TUN:'Tunisia', TUR:'Turkey',
+    TKM:'Turkmenistan', UGA:'Uganda', UKR:'Ukraine', ARE:'UAE', GBR:'United Kingdom',
+    USA:'United States', URY:'Uruguay', UZB:'Uzbekistan', VEN:'Venezuela', VNM:'Vietnam',
+    YEM:'Yemen', ZMB:'Zambia', ZWE:'Zimbabwe',
+    D:'Germany', GBD:'British Dependent Territories', UTO:'Utopia', XXA:'Stateless',
+  };
+
+  function countryName(code) {
+    if (!code) return code;
+    const clean = code.replace(/<+$/, '');
+    return COUNTRY_NAMES[clean] || clean;
+  }
+
+  /* ── Name parsing ── */
+  function parseName(nameField) {
+    const [surnamePart, ...givenParts] = nameField.split('<<');
+    const surname = surnamePart.replace(/</g, ' ').trim();
+    const givenNames = givenParts
+      .join(' ')
+      .replace(/</g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+    return { surname, givenNames, fullName: [surname, givenNames].filter(Boolean).join(', ') };
+  }
+
+  /* ── Sex field ── */
+  function parseSex(ch) {
+    return ch === 'M' ? 'Male' : ch === 'F' ? 'Female' : 'Unspecified';
+  }
+
+  /* ── Clean filler ── */
+  function clean(str) {
+    return str.replace(/<+$/, '').replace(/<+/g, ' ').trim();
+  }
+
+  /* ── OCR normalization ── */
+  /**
+   * Tesseract can confuse certain characters when reading OCR-B fonts.
+   * This function normalizes common OCR errors in MRZ lines.
+   */
+  function normalizeMRZChar(ch, position, lineIndex) {
+    // In numeric-only positions, normalize alpha lookalikes
+    const NUMERIC_POSITIONS_L2 = new Set([9, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 42, 43]);
+    const isNumericPos = lineIndex === 1 && NUMERIC_POSITIONS_L2.has(position);
+
+    if (isNumericPos) {
+      return ch
+        .replace(/O/g, '0')
+        .replace(/o/g, '0')
+        .replace(/I/g, '1')
+        .replace(/l/g, '1')
+        .replace(/Z/g, '2')
+        .replace(/S/g, '5')
+        .replace(/B/g, '8');
+    }
+    return ch;
+  }
+
+  function normalizeMRZLine(line, lineIndex) {
+    // Uppercase, remove spaces and non-MRZ chars, keep A-Z 0-9 <
+    let normalized = line.toUpperCase().replace(/[^A-Z0-9<]/g, '<');
+
+    // Per-char normalization
+    normalized = normalized
+      .split('')
+      .map((ch, i) => normalizeMRZChar(ch, i, lineIndex))
+      .join('');
+
+    return normalized;
+  }
+
+  /* ── Extract MRZ lines from OCR text ── */
+  /**
+   * Tries to find two consecutive 44-character MRZ lines in OCR output.
+   * Returns [line1, line2] or null if not found.
+   */
+  function extractMRZLines(ocrText) {
+    if (!ocrText) return null;
+
+    const lines = ocrText.split('\n').map(l => l.trim()).filter(Boolean);
+    const candidates = [];
+
+    for (const raw of lines) {
+      // Keep only MRZ-valid characters
+      const cleaned = raw.toUpperCase().replace(/[^A-Z0-9<\s]/g, '').replace(/\s+/g, '');
+      if (cleaned.length >= 35) {  // some tolerance below 44
+        candidates.push(cleaned);
+      }
+    }
+
+    // Look for pair of lines near length 44
+    for (let i = 0; i < candidates.length - 1; i++) {
+      const a = candidates[i];
+      const b = candidates[i + 1];
+      if (a.length >= 38 && b.length >= 38 && a.length <= 50 && b.length <= 50) {
+        // Pad/trim to 44
+        const l1 = a.padEnd(44, '<').slice(0, 44);
+        const l2 = b.padEnd(44, '<').slice(0, 44);
+        if (l1[0] === 'P') {  // Line 1 must start with P for a passport
+          return [normalizeMRZLine(l1, 0), normalizeMRZLine(l2, 1)];
+        }
+      }
+    }
+
+    // Fallback: try single long string containing both lines concatenated
+    const allText = candidates.join('');
+    const match = allText.match(/P[A-Z<][A-Z<]{3}[A-Z<]{39}[A-Z0-9<]{44}/);
+    if (match) {
+      const combined = match[0];
+      return [
+        normalizeMRZLine(combined.slice(0, 44), 0),
+        normalizeMRZLine(combined.slice(44, 88), 1),
+      ];
+    }
+
+    return null;
+  }
+
+  /* ── Main parse function ── */
+  /**
+   * Parse TD3 passport MRZ.
+   * @param {string} line1 - 44-char line 1
+   * @param {string} line2 - 44-char line 2
+   * @returns {Object} parsed passport data
+   */
+  function parseTD3(line1, line2) {
+    const result = {
+      valid: false,
+      errors: [],
+      raw: { line1, line2 },
+    };
+
+    if (!line1 || line1.length !== 44) {
+      result.errors.push('Line 1 is not 44 characters');
+      return result;
+    }
+    if (!line2 || line2.length !== 44) {
+      result.errors.push('Line 2 is not 44 characters');
+      return result;
+    }
+
+    // Line 1 fields
+    result.documentType    = line1[0];
+    result.documentSubtype = line1[1] === '<' ? '' : line1[1];
+    result.issuingCountry  = line1.slice(2, 5).replace(/<+$/, '');
+    result.issuingCountryName = countryName(result.issuingCountry);
+
+    const nameField = line1.slice(5, 44);
+    const { surname, givenNames, fullName } = parseName(nameField);
+    result.surname    = surname;
+    result.givenNames = givenNames;
+    result.fullName   = fullName;
+
+    // Line 2 fields
+    result.passportNumber = clean(line2.slice(0, 9));
+    const pnCheckDigit    = line2[9];
+    result.nationality    = line2.slice(10, 13).replace(/<+$/, '');
+    result.nationalityName = countryName(result.nationality);
+
+    const dobRaw = line2.slice(13, 19);
+    const dobCheck = line2[19];
+    result.sex = parseSex(line2[20]);
+
+    const expiryRaw   = line2.slice(21, 27);
+    const expiryCheck = line2[27];
+    const optional    = line2.slice(28, 42);
+    const optCheck    = line2[42];
+    const compositeCheck = line2[43];
+
+    // Dates
+    result.dateOfBirth = parseMRZDate(dobRaw);
+    result.expiryDate  = parseMRZDate(expiryRaw);
+
+    // Optional / personal number
+    result.personalNumber = clean(optional) || null;
+
+    // Check digit verification
+    const checks = {
+      passportNumber: verifyCheckDigit(line2.slice(0, 9), pnCheckDigit),
+      dateOfBirth:    verifyCheckDigit(dobRaw, dobCheck),
+      expiryDate:     verifyCheckDigit(expiryRaw, expiryCheck),
+      optional:       verifyCheckDigit(optional, optCheck),
+      composite:      verifyCheckDigit(
+        line2.slice(0, 10) + line2.slice(13, 20) + line2.slice(21, 43),
+        compositeCheck
+      ),
+    };
+    result.checkDigits = checks;
+
+    const failedChecks = Object.entries(checks)
+      .filter(([, v]) => v === false)
+      .map(([k]) => k);
+
+    if (failedChecks.length > 0) {
+      result.errors.push(`Check digit failure: ${failedChecks.join(', ')}`);
+    }
+
+    // Expiry status
+    if (result.expiryDate) {
+      const expiry = new Date(result.expiryDate.year, result.expiryDate.month - 1, result.expiryDate.day);
+      result.expired = expiry < new Date();
+    }
+
+    result.valid = failedChecks.length === 0;
+    return result;
+  }
+
+  /* ── Public API ── */
+  return {
+    /**
+     * Parse raw OCR text: extracts MRZ lines then parses them.
+     * @param {string} ocrText
+     * @returns {{ data: Object|null, lines: string[]|null, error: string|null }}
+     */
+    parseFromOCR(ocrText) {
+      const lines = extractMRZLines(ocrText);
+      if (!lines) {
+        return { data: null, lines: null, error: 'Could not detect MRZ lines in the image.' };
+      }
+      const data = parseTD3(lines[0], lines[1]);
+      return { data, lines, error: data.errors.length > 0 ? data.errors.join('; ') : null };
+    },
+
+    /**
+     * Parse explicit MRZ lines.
+     */
+    parseLines(line1, line2) {
+      return parseTD3(
+        normalizeMRZLine(line1, 0),
+        normalizeMRZLine(line2, 1)
+      );
+    },
+
+    extractMRZLines,
+    normalizeMRZLine,
+    computeCheckDigit,
+  };
+
+})();
+
+// Export for module environments; no-op in browser
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = MRZParser;
+}
