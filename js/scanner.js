@@ -158,13 +158,13 @@
     const W = img.width, H = img.height;
     const cropY = Math.round(H * yFrac);
     const cropH = Math.round(H * hFrac);
-    const scale = Math.max(1, 1400 / W);
+    const scale = Math.max(1.5, 1400 / W);
     const outW = Math.round(W * scale);
     const outH = Math.round(cropH * scale);
     const canvas = document.createElement('canvas');
     canvas.width = outW; canvas.height = outH;
     const ctx = canvas.getContext('2d');
-    ctx.filter = 'grayscale(1) contrast(2.2) brightness(1.05)';
+    ctx.filter = 'grayscale(1) contrast(1.8) brightness(1.1)';
     ctx.drawImage(img, 0, cropY, W, cropH, 0, 0, outW, outH);
     ctx.filter = 'none';
     return canvas;
@@ -202,32 +202,76 @@
 
   /**
    * Build OCR candidates from the captured passport image.
-   * Since captureVideoFrame() already crops to the guide frame,
-   * the MRZ is always in the bottom ~28% of the image.
-   * We try the full passport image and the isolated MRZ strip.
+   *
+   * Primary strategy: crop each MRZ line individually and OCR with PSM 7
+   * (single text line) — far more accurate for OCR-B monospace characters
+   * than block or sparse modes.
+   *
+   * Fallback: MRZ strip blocks with PSM 6/11 (previous approach).
+   *
+   * Returns { linePairs, stripImgs }
    */
   function buildOCRCandidates(dataURL) {
     return new Promise(resolve => {
       const img = new Image();
       img.onload = () => {
-        // Full passport crop + MRZ strip only (bottom 30%)
-        const regions = [
-          [0.72, 0.28],   // MRZ strip — bottom 28% of passport page
-          [0.65, 0.35],   // slightly wider MRZ area
-          [0,    1   ],   // full passport page (fallback)
+        const W = img.width, H = img.height;
+        const linePairs = [];
+
+        // MRZ is in the bottom ~25% of the passport page.
+        // Try three strip offsets to handle slight misalignment.
+        const stripConfigs = [
+          { top: 0.74, h: 0.26 },
+          { top: 0.70, h: 0.30 },
+          { top: 0.77, h: 0.23 },
         ];
-        const out = [];
+
+        for (const { top, h } of stripConfigs) {
+          const stripY = Math.round(H * top);
+          const stripH = Math.round(H * h);
+          const lineH  = Math.floor(stripH / 2);
+          // Scale so each line is at least 100 px tall — more pixels = better OCR-B recognition
+          const scale  = Math.max(2, 100 / lineH);
+          const outW   = Math.round(W * scale);
+          const outLH  = Math.round(lineH * scale);
+
+          const cropLine = (srcY) => {
+            const c = document.createElement('canvas');
+            c.width = outW; c.height = outLH;
+            const ctx = c.getContext('2d');
+            ctx.filter = 'grayscale(1) contrast(1.8) brightness(1.1)';
+            ctx.drawImage(img, 0, srcY, W, lineH, 0, 0, outW, outLH);
+            ctx.filter = 'none';
+            const bin = binarizeCanvas(c, null);
+            return { n: bin.toDataURL('image/png'), i: invertCanvas(bin).toDataURL('image/png') };
+          };
+
+          const l1 = cropLine(stripY);
+          const l2 = cropLine(stripY + lineH);
+
+          linePairs.push({ l1: l1.n, l2: l2.n });
+          linePairs.push({ l1: l1.i, l2: l2.i });
+        }
+
+        // Strip/block fallback candidates
+        const regions = [
+          [0.72, 0.28],
+          [0.65, 0.35],
+          [0,    1   ],
+        ];
+        const stripImgs = [];
         for (const [y, h] of regions) {
-          const base     = prepareCanvas(img, y, h);
-          const binAuto  = binarizeCanvas(base, null);
-          const inverted = invertCanvas(binAuto);
-          out.push(
+          const base    = prepareCanvas(img, y, h);
+          const binAuto = binarizeCanvas(base, null);
+          const inv     = invertCanvas(binAuto);
+          stripImgs.push(
             base.toDataURL('image/png'),
             binAuto.toDataURL('image/png'),
-            inverted.toDataURL('image/png'),
+            inv.toDataURL('image/png'),
           );
         }
-        resolve(out);
+
+        resolve({ linePairs, stripImgs });
       };
       img.src = dataURL;
     });
@@ -271,19 +315,32 @@
   /* ── Main OCR pipeline: try all candidates until MRZ found ── */
   async function runOCR(dataURL) {
     const worker = await initTesseract();
-    const candidates = await buildOCRCandidates(dataURL);
+    const { linePairs, stripImgs } = await buildOCRCandidates(dataURL);
     let lastText = '';
 
-    // Priority attempts: PSM 11 (sparse) without whitelist first — most permissive
-    for (const img of candidates) {
+    // ── Strategy 1: PSM 7 per MRZ line (best for OCR-B monospace) ──
+    // PSM 7 = "Treat the image as a single text line" — much more accurate
+    // than block/sparse modes for the fixed-width OCR-B font used in MRZ.
+    for (const { l1, l2 } of linePairs) {
+      const t1 = await runOCROnImage(worker, l1, 7, true);
+      const t2 = await runOCROnImage(worker, l2, 7, true);
+      // Collapse any internal newlines each line may have, then join with \n
+      const combined = t1.replace(/\n/g, '').trim() + '\n' + t2.replace(/\n/g, '').trim();
+      lastText = combined;
+      const lines = MRZParser.extractMRZLines(combined);
+      if (lines) return { text: combined, lines };
+    }
+
+    // ── Strategy 2: PSM 11 (sparse) without whitelist on strip images ──
+    for (const img of stripImgs) {
       const text = await runOCROnImage(worker, img, 11, false);
       lastText = text;
       const lines = MRZParser.extractMRZLines(text);
       if (lines) return { text, lines };
     }
 
-    // Second pass: PSM 6 (uniform block) with whitelist
-    for (const img of candidates) {
+    // ── Strategy 3: PSM 6 (block) with whitelist on strip images ──
+    for (const img of stripImgs) {
       const text = await runOCROnImage(worker, img, 6, true);
       lastText = text;
       const lines = MRZParser.extractMRZLines(text);

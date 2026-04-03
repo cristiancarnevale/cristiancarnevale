@@ -242,6 +242,7 @@ const MRZParser = (() => {
       // Phase 1 — known high-probability filler misreads
       // Replace runs of 2+ when count exceeds plausible name usage
       const rules = [
+        ['C', 5, 3],   // C{3+} when C appears 5+ times  (< often → C in OCR-B)
         ['L', 4, 2],   // L{2+} when L appears 4+ times
         ['Z', 3, 3],   // Z{3+} when Z appears 3+ times
         ['K', 2, 2],   // K{2+} when K appears 2+ times  (<< often → KK)
