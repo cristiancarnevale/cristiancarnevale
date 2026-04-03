@@ -146,46 +146,80 @@ const MRZParser = (() => {
   }
 
   /* ── OCR normalization ── */
-  /**
-   * Tesseract can confuse certain characters when reading OCR-B fonts.
-   * This function normalizes common OCR errors in MRZ lines.
+  /*
+   * ICAO 9303 TD3 position types (passport):
+   *
+   * LINE 1 — all 44 positions are ALPHA or < (A-Z, filler <)
+   *   [0]     document type  (P)
+   *   [1]     subtype        (< or letter)
+   *   [2-4]   issuing country (A-Z or <)
+   *   [5-43]  name field     (A-Z or <)
+   *
+   * LINE 2 — mixed types:
+   *   [0-8]   passport number  ALPHANUMERIC (A-Z, 0-9, <)
+   *   [9]     check digit      DIGIT 0-9
+   *   [10-12] nationality      ALPHA A-Z or <
+   *   [13-18] date of birth    DIGIT 0-9
+   *   [19]    check digit      DIGIT 0-9
+   *   [20]    sex              ALPHA M / F / <
+   *   [21-26] expiry date      DIGIT 0-9
+   *   [27]    check digit      DIGIT 0-9
+   *   [28-41] optional/PIN     ALPHANUMERIC
+   *   [42]    check digit      DIGIT 0-9 (or < if unused)
+   *   [43]    composite check  DIGIT 0-9
+   *
+   * Common OCR-B misreads:  < → L, < → Z, O → 0, I → 1, S → 5, B → 8, G → 6
    */
-  function normalizeMRZChar(ch, position, lineIndex) {
-    // In numeric-only positions, normalize alpha lookalikes
-    const NUMERIC_POSITIONS_L2 = new Set([9, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 42, 43]);
-    const isNumericPos = lineIndex === 1 && NUMERIC_POSITIONS_L2.has(position);
 
-    if (isNumericPos) {
-      return ch
-        .replace(/O/g, '0')
-        .replace(/o/g, '0')
-        .replace(/I/g, '1')
-        .replace(/l/g, '1')
-        .replace(/Z/g, '2')
-        .replace(/S/g, '5')
-        .replace(/B/g, '8');
+  // Alpha-to-digit substitutions for strictly numeric positions
+  const ALPHA_TO_DIGIT = {
+    O:'0', Q:'0', D:'0', C:'0',
+    I:'1', L:'1',
+    Z:'2',
+    E:'3',
+    S:'5',
+    G:'6',
+    T:'7',
+    B:'8',
+  };
+
+  // Digit-to-alpha substitutions for strictly alpha positions
+  const DIGIT_TO_ALPHA = {
+    '0':'O', '1':'I', '5':'S', '8':'B',
+  };
+
+  // Strictly numeric positions in Line 2
+  const NUMERIC_L2 = new Set([9, 13,14,15,16,17,18, 19, 21,22,23,24,25,26, 27, 42, 43]);
+  // Strictly alpha positions in Line 2
+  const ALPHA_L2   = new Set([10, 11, 12, 20]);
+
+  function normalizeMRZChar(ch, pos, lineIdx) {
+    if (lineIdx === 1 && NUMERIC_L2.has(pos)) {
+      // Position MUST be a digit
+      if (/[0-9]/.test(ch)) return ch;
+      return ALPHA_TO_DIGIT[ch] ?? '0';
     }
-    return ch;
+    if (lineIdx === 0 || (lineIdx === 1 && ALPHA_L2.has(pos))) {
+      // Position MUST be alpha or <
+      if (/[A-Z<]/.test(ch)) return ch;
+      return DIGIT_TO_ALPHA[ch] ?? '<';
+    }
+    return ch; // alphanumeric positions: leave as-is
   }
 
   function normalizeMRZLine(line, lineIndex) {
-    // Uppercase, remove spaces and non-MRZ chars, keep A-Z 0-9 <
-    let normalized = line.toUpperCase().replace(/[^A-Z0-9<]/g, '<');
+    let n = line.toUpperCase().replace(/[^A-Z0-9<]/g, '<');
 
-    // Fix: Tesseract commonly reads OCR-B '<' filler as 'L'.
-    // If the line contains many Ls (>5), runs of 2+ consecutive Ls are fillers.
-    const lCount = (normalized.match(/L/g) || []).length;
-    if (lCount > 5) {
-      normalized = normalized.replace(/L{2,}/g, m => '<'.repeat(m.length));
-    }
+    // Replace filler misreads: < is commonly read as L or Z by Tesseract OCR-B
+    const lCount = (n.match(/L/g) || []).length;
+    const zCount = (n.match(/Z/g) || []).length;
+    if (lCount > 5) n = n.replace(/L{2,}/g, m => '<'.repeat(m.length));
+    if (zCount > 4) n = n.replace(/Z{3,}/g, m => '<'.repeat(m.length));
 
-    // Per-char normalization for numeric positions
-    normalized = normalized
-      .split('')
-      .map((ch, i) => normalizeMRZChar(ch, i, lineIndex))
-      .join('');
+    // Per-position type enforcement
+    n = n.split('').map((ch, i) => normalizeMRZChar(ch, i, lineIndex)).join('');
 
-    return normalized;
+    return n;
   }
 
   /* ── Extract MRZ lines from OCR text ── */
