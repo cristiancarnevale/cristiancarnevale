@@ -125,14 +125,32 @@ const MRZParser = (() => {
 
   /* ── Name parsing ── */
   function parseName(nameField) {
-    const [surnamePart, ...givenParts] = nameField.split('<<');
-    const surname = surnamePart.replace(/</g, ' ').trim();
-    const givenNames = givenParts
-      .join(' ')
-      .replace(/</g, ' ')
-      .trim()
-      .replace(/\s+/g, ' ');
-    return { surname, givenNames, fullName: [surname, givenNames].filter(Boolean).join(', ') };
+    // Standard ICAO split: surname<<given names
+    if (nameField.includes('<<')) {
+      const [surnamePart, ...givenParts] = nameField.split('<<');
+      const surname = surnamePart.replace(/</g, '').trim();
+      const givenNames = givenParts
+        .join(' ')
+        .replace(/</g, ' ')
+        .trim()
+        .replace(/\s+/g, ' ');
+      return { surname, givenNames, fullName: [surname, givenNames].filter(Boolean).join(', ') };
+    }
+
+    // Fallback: << was not found (OCR noise still present).
+    // Extract word sequences of 4+ letters — first = surname, second = given name.
+    const words = nameField.replace(/[^A-Z]/g, ' ').split(/\s+/).filter(w => w.length >= 4);
+    if (words.length >= 2) {
+      const surname = words[0];
+      const givenNames = words[1];
+      return { surname, givenNames, fullName: `${surname}, ${givenNames}` };
+    }
+    if (words.length === 1) {
+      return { surname: words[0], givenNames: '', fullName: words[0] };
+    }
+    // Last resort: return whatever non-filler text is there
+    const raw = nameField.replace(/[^A-Z]/g, ' ').trim().split(/\s+/)[0] || nameField;
+    return { surname: raw, givenNames: '', fullName: raw };
   }
 
   /* ── Sex field ── */
@@ -210,13 +228,57 @@ const MRZParser = (() => {
   function normalizeMRZLine(line, lineIndex) {
     let n = line.toUpperCase().replace(/[^A-Z0-9<]/g, '<');
 
-    // Replace filler misreads: < is commonly read as L or Z by Tesseract OCR-B
-    const lCount = (n.match(/L/g) || []).length;
-    const zCount = (n.match(/Z/g) || []).length;
-    if (lCount > 5) n = n.replace(/L{2,}/g, m => '<'.repeat(m.length));
-    if (zCount > 4) n = n.replace(/Z{3,}/g, m => '<'.repeat(m.length));
+    if (lineIndex === 0) {
+      // Line 1: ALL 44 positions are alpha or <  (ICAO 9303 §4)
+      // Tesseract reads the OCR-B < filler as various letters: L, Z, K, C, W, X…
+      // Strategy: count each letter in the name field (pos 5+).
+      // Any letter appearing far more than it could in a real name is a filler misread.
+      const nameSection = n.slice(5);
+      const freq = {};
+      for (const ch of nameSection) {
+        if (/[A-Z]/.test(ch)) freq[ch] = (freq[ch] || 0) + 1;
+      }
 
-    // Per-position type enforcement
+      // Phase 1 — known high-probability filler misreads
+      // Replace runs of 2+ when count exceeds plausible name usage
+      const rules = [
+        ['L', 4, 2],   // L{2+} when L appears 4+ times
+        ['Z', 3, 3],   // Z{3+} when Z appears 3+ times
+        ['K', 2, 2],   // K{2+} when K appears 2+ times  (<< often → KK)
+        ['W', 2, 2],   // W{2+} when W appears 2+ times
+        ['X', 2, 2],   // X rarely in names
+        ['Y', 3, 2],
+      ];
+      for (const [ch, minCount, minRun] of rules) {
+        if ((freq[ch] || 0) >= minCount) {
+          n = n.replace(new RegExp(`${ch}{${minRun},}`, 'g'), m => '<'.repeat(m.length));
+        }
+      }
+
+      // Phase 2 — generic: any letter appearing 6+ times in name field
+      // that exceeds its realistic name presence → replace runs of 3+
+      const updatedFreq = {};
+      for (const ch of n.slice(5)) {
+        if (/[A-Z]/.test(ch)) updatedFreq[ch] = (updatedFreq[ch] || 0) + 1;
+      }
+      for (const [ch, cnt] of Object.entries(updatedFreq)) {
+        if (cnt >= 6) {
+          n = n.replace(new RegExp(`${ch}{3,}`, 'g'), m => '<'.repeat(m.length));
+        }
+        if (cnt >= 10) {
+          n = n.replace(new RegExp(`${ch}{2,}`, 'g'), m => '<'.repeat(m.length));
+        }
+      }
+
+    } else {
+      // Line 2 — only L and Z filler detection (more conservative)
+      const lCount = (n.match(/L/g) || []).length;
+      const zCount = (n.match(/Z/g) || []).length;
+      if (lCount > 5) n = n.replace(/L{2,}/g, m => '<'.repeat(m.length));
+      if (zCount > 4) n = n.replace(/Z{3,}/g, m => '<'.repeat(m.length));
+    }
+
+    // Per-position type enforcement (ICAO position rules)
     n = n.split('').map((ch, i) => normalizeMRZChar(ch, i, lineIndex)).join('');
 
     return n;
