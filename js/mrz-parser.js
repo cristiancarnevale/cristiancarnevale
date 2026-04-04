@@ -128,16 +128,32 @@ const MRZParser = (() => {
     // Standard ICAO split: surname<<given names
     if (nameField.includes('<<')) {
       const [surnamePart, ...givenParts] = nameField.split('<<');
-      const surname = surnamePart.replace(/</g, '').trim();
-      const givenNames = givenParts
-        .join(' ')
-        .replace(/</g, ' ')
-        .trim()
-        .replace(/\s+/g, ' ');
+      // Compound surnames (DE<LA<CRUZ → DE LA CRUZ)
+      const surname = surnamePart.replace(/</g, ' ').replace(/\s+/g, ' ').trim();
+
+      // Build given names from '<'-separated components.
+      // Filter out 1-char components — always OCR filler noise (isolated L, K, C…).
+      let givenNames = givenParts
+        .join('<')
+        .split('<')
+        .map(s => s.trim())
+        .filter(s => s.length >= 2)
+        .join(' ');
+
+      // Strip trailing space-separated OCR filler chars (K L C Z X W after a space).
+      // e.g., "CRISTIAN K L" → "CRISTIAN"
+      givenNames = givenNames.replace(/(\s+[KLCZXW]{1,3})+\s*$/, '').trim();
+
+      // Strip trailing K directly attached to a name ending in N.
+      // The filler '<' immediately after an N-ending name is very commonly
+      // misread as K in OCR-B (CRISTIAN+K, SIMON+K, JASON+K, CHRISTIAN+K…).
+      // Requires 5+ chars before N so short words like FRANK are unaffected.
+      givenNames = givenNames.replace(/\b([A-Z]{5,}N)K\b/g, '$1').trim();
+
       return { surname, givenNames, fullName: [surname, givenNames].filter(Boolean).join(', ') };
     }
 
-    // Fallback: << was not found (OCR noise still present).
+    // Fallback: << was not found (extreme OCR noise).
     // Extract word sequences of 4+ letters — first = surname, second = given name.
     const words = nameField.replace(/[^A-Z]/g, ' ').split(/\s+/).filter(w => w.length >= 4);
     if (words.length >= 2) {
@@ -148,7 +164,6 @@ const MRZParser = (() => {
     if (words.length === 1) {
       return { surname: words[0], givenNames: '', fullName: words[0] };
     }
-    // Last resort: return whatever non-filler text is there
     const raw = nameField.replace(/[^A-Z]/g, ' ').trim().split(/\s+/)[0] || nameField;
     return { surname: raw, givenNames: '', fullName: raw };
   }

@@ -72,7 +72,7 @@
         Open Camera
       </button>
       <p class="privacy-note">All processing happens locally in your browser. No data is sent to any server.</p>
-      <p class="version-note">v1.8 — PSM 7 per-line OCR for accurate OCR-B reading</p>
+      <p class="version-note">v1.9 — accurate given name parsing for OCR-B filler noise</p>
     </section>
 
     <!-- ── Screen: Camera ── -->
@@ -199,6 +199,12 @@
       <details class="mrz-raw-details">
         <summary>Raw MRZ</summary>
         <pre id="mrz-raw" class="mrz-raw"></pre>
+      </details>
+
+      <!-- Full raw OCR output -->
+      <details class="mrz-raw-details">
+        <summary>Raw OCR Text (full)</summary>
+        <pre id="ocr-raw" class="mrz-raw" style="font-size:0.65rem;white-space:pre-wrap;word-break:break-all;"></pre>
       </details>
 
       <!-- Actions -->

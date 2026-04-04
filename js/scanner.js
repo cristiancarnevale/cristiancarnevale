@@ -27,6 +27,7 @@
   const processingDetail = $('processing-detail');
   const resultFields   = $('result-fields');
   const mrzRaw         = $('mrz-raw');
+  const ocrRaw         = $('ocr-raw');
   const resultTitle    = $('result-title');
   const resultSubtitle = $('result-subtitle');
   const errorTitle     = $('error-title');
@@ -381,7 +382,7 @@
         return;
       }
 
-      setTimeout(() => showResultsScreen(data, lines), 300);
+      setTimeout(() => showResultsScreen(data, lines, ocrText), 300);
 
     } catch (err) {
       console.error('Scan error:', err);
@@ -407,7 +408,7 @@
   }
 
   /* ── Results screen ── */
-  function showResultsScreen(data, lines) {
+  function showResultsScreen(data, lines, ocrText) {
     resultFields.innerHTML = '';
 
     resultTitle.textContent = data.valid ? 'Passport Read Successfully' : 'Passport Read (with warnings)';
@@ -498,9 +499,14 @@
       resultFields.appendChild(card);
     }
 
-    // Raw MRZ
+    // Raw MRZ (normalized lines)
     if (lines) {
       mrzRaw.textContent = lines.join('\n');
+    }
+
+    // Full raw OCR text
+    if (ocrRaw) {
+      ocrRaw.textContent = ocrText || '(no OCR text)';
     }
 
     showScreen('results');
