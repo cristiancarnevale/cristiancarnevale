@@ -286,6 +286,17 @@ const MRZParser = (() => {
         }
       }
 
+      // Phase 3 — fix isolated filler-misread chars surrounded by < on both sides.
+      // This catches cases like CARNEVALE<K<CRISTIAN where the << separator is read
+      // as <K< (K inserted between two < chars). Any single letter from the
+      // high-probability OCR-B filler set that has < on both sides is filler.
+      // Run twice: first pass may expose a new isolated char for the second pass.
+      let nameStr = n.slice(5);
+      for (let pass = 0; pass < 2; pass++) {
+        nameStr = nameStr.replace(/(<+)[KLZXWCY](<+)/g, (_, pre, post) => pre + '<' + post);
+      }
+      n = n.slice(0, 5) + nameStr;
+
     } else {
       // Line 2 — only L and Z filler detection (more conservative)
       const lCount = (n.match(/L/g) || []).length;
